@@ -1,9 +1,80 @@
 # tabscry
 
-*Scry into a browser tab* — Google **AI Mode** in your terminal, driven through your real logged-in browser (Dia, Chrome, any Chromium).
+*Scry into a browser tab* — Google **AI Mode** in your terminal. A Chromium extension drives the real
+AI Mode page and streams it back to a Textual TUI over a local websocket. The browser is either one
+tabscry launches and owns (default) or your own signed-in one.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph term["your terminal"]
+        tui["Textual TUI<br/>app.py · orb.py · themes.py"]
+        chat["chat.py<br/>history · context · export"]
+        tui <--> chat
+    end
+    subgraph py["tabscry (python)"]
+        bridge["bridge.py<br/>websocket server"]
+        engine["browser.py<br/>launches + reaps Chromium"]
+    end
+    subgraph br["Chromium"]
+        sw["background.js<br/>service worker"]
+        page["page.js<br/>scrape + type"]
+        goog["AI Mode page<br/>google.com/search?udm=50"]
+        sw -- "executeScript" --> page
+        page -- "DOM" --> goog
+    end
+    tui <--> bridge
+    tui -. "engine A only" .-> engine
+    engine -. "spawns with --load-extension" .-> sw
+    bridge <-- "ws://127.0.0.1:8766 (A) / :8765 (B)<br/>ask · chunk · done · error" --> sw
 ```
-terminal TUI  ⇄  ws://127.0.0.1:8765  ⇄  Dia extension  ⇄  background tab: google.com/search?udm=50
+
+Two engines, same extension:
+
+| | **A. tabscry's browser** (default) | **B. your browser** |
+| --- | --- | --- |
+| who runs Chromium | tabscry (throwaway profile, unthrottled) | you (Dia/Chrome/Chromium) |
+| Google session | signed out | your signed-in one |
+| answers stall when hidden | no | possible — browsers throttle pages you can't see |
+| setup | `tabscry --install-browser` | load `extension/` unpacked |
+
+## A question, end to end
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor you
+    participant TUI as TUI (app.py)
+    participant WS as bridge.py
+    participant SW as background.js
+    participant P as page.js
+    participant G as AI Mode page
+
+    you->>TUI: type a question
+    Note over TUI: reopened chat? prefix recent Q&A as context (≤7.5k chars)
+    TUI->>WS: ask {id, text, new, route}
+    WS->>SW: {"type":"ask"}
+    alt first question of the thread
+        SW->>G: open minimized window / background tab at ?udm=50&q=…
+    else follow-up
+        SW->>P: submitFollowUp(text)
+        P->>G: type into "Ask anything" + Enter
+    end
+    loop every 350ms until text stops changing for ~3s
+        SW->>P: scrape(baseline)
+        P->>G: read [data-container-id=main-col] + rhs-col
+        P-->>SW: {markdown, sources}
+        SW-->>WS: chunk {markdown}
+        WS-->>TUI: chunk
+        TUI-->>you: typewriter render (40fps), images fetched by URL
+    end
+    SW-->>WS: done {markdown, sources}
+    WS-->>TUI: done
+    TUI->>TUI: save chat JSON, show "▸ N sources" chip
+    you->>TUI: ctrl+q
+    TUI->>SW: (socket closes) → close every tab/window it opened
+    TUI->>TUI: engine A: kill Chromium, delete its profile
 ```
 
 ## Setup
@@ -55,34 +126,27 @@ with your question; the answer label shows `↺ N earlier turns as context`.
 - It's scraping Google's DOM — when Google ships a redesign, fix `scrape()` / `submitFollowUp()` in `extension/page.js`.
 - If Google shows a captcha/consent page, `/open` the tab and clear it.
 - `ERR_CONNECTION_REFUSED` in the extension's error log just means the TUI isn't running; it retries with backoff (up to 30s).
-- After editing `extension/`, hit reload on the extension card.
+- After editing `extension/`: engine A reinstalls it automatically (its copy is versioned by a hash of the files); engine B needs reload on the extension card.
 - ABC Areal Mono ships without the "monospaced" flags, so Ghostty won't offer it until you set them:
   `uvx --with fonttools python -c "from fontTools.ttLib import TTFont; import pathlib\n[(lambda f: (f.__setitem__('post', f['post']), setattr(f['post'],'isFixedPitch',1), setattr(f['OS/2'].panose,'bProportion',9), f.save(p)))(TTFont(p)) for p in map(str, pathlib.Path.home().glob('Library/Fonts/ABCArealMono-*.ttf'))]"`
   then move the files out of `~/Library/Fonts` and back to refresh macOS's font cache.
 - A TUI can't set the terminal's font, so `--font` launches a fresh Ghostty window with `--font-family` instead of touching your Ghostty config. Use the *Mono* cut of any font; Ghostty keeps its built-in Nerd Font symbols as fallback, so the icons survive.
-- Ports: `TABSCRY_PORT` (your browser, default 8765), `TABSCRY_ENGINE_PORT` (tabscry's own browser; default 0 = pick a free port) — separate so both can be loaded at once.
+- Ports: `TABSCRY_PORT` (your browser, default 8765), `TABSCRY_ENGINE_PORT` (tabscry's own browser, default 8766) — separate so both can be loaded at once.
 - tabscry's own browser gets a throwaway profile per run (a reused profile keeps Chrome's installed copy of the extension, so edits never take effect), and any browser left from an earlier run is killed on start. It's unthrottled (`--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`), so answers stream even though nothing is visible; it's signed out, and it's killed when the TUI exits.
 - One-shot runs with the sandboxed engine start and stop the browser per command, so `--continue` only keeps context in engine B (your browser).
 
 ## Future work
 
-### ~~Sandboxed browser engine~~ (done — engine A above)
-Today tabscry drives Google AI Mode inside *your* browser via the extension. That has a structural
-problem: Chromium throttles pages it thinks you can't see (background tabs, minimized/occluded
-windows), so an answer can stall until you look at the tab — and an extension can't turn that off.
+### ~~Sandboxed browser engine~~ — shipped as engine A
+Driving AI Mode in *your* browser means Chromium throttles the page whenever it thinks you can't see
+it (background tab, minimized/occluded window), so answers stall until you look — and an extension
+can't turn that off. Engine A launches its own Chromium with throttling disabled instead.
 
-Idea: let tabscry launch its own Chromium (e.g. via Playwright/CDP) with a dedicated profile under
-`~/.local/share/tabscry/browser` and throttling disabled (`--disable-background-timer-throttling`,
-`--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`), and inject the
-existing `extension/page.js` directly.
-
-- **Pros:** no stalls, zero interference with your browser (no tabs/windows/focus), works regardless
-  of which browser you use, no extension or websocket bridge to install and reload.
-- **Risks / costs:** headless Chromium is more likely to hit Google's bot detection (fallback: a
-  headful window parked off-screen); no signed-in session/personalisation by default; an extra
-  ~300–500 MB process and a one-time browser download.
-- **Still open:** it runs headful-but-hidden (a minimized window in its own instance), not headless —
-  headless is more likely to trip Google's bot detection and hasn't been tried.
+- **Still open:** it runs headful-but-hidden (a minimized window in its own instance), not headless.
+  Headless would be tidier but is likelier to trip Google's bot detection, and hasn't been tried.
+  If it ever does get flagged, a stealth build ([Camoufox](https://github.com/daijro/camoufox),
+  Patchright) is the fallback — Camoufox is Firefox-based, beta, and aimed at fingerprinting
+  defences rather than Google's IP/rate heuristics, so it's a last resort rather than a first step.
 
 ### Docker engine
 Run Chromium + the extension inside a container on an Xvfb virtual display, relayed to the TUI, with
