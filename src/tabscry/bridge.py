@@ -7,13 +7,16 @@ import os
 
 import websockets
 
-HOST, PORT = "127.0.0.1", int(os.environ.get("TABSCRY_PORT", 8765))  # extension is hardwired to 8765
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("TABSCRY_PORT", 8765))  # extension in your own browser
+ENGINE_PORT = int(os.environ.get("TABSCRY_ENGINE_PORT", 8766))  # tabscry's own Chromium
 
 
 class Bridge:
     """One extension connection at a time; each question gets its own message queue."""
 
-    def __init__(self, on_status=None):
+    def __init__(self, on_status=None, port: int = PORT):
+        self.port = port
         self.conn = None
         self.pending: dict[str, asyncio.Queue] = {}
         self.ids = itertools.count(1)
@@ -21,7 +24,7 @@ class Bridge:
         self.connected = asyncio.Event()
 
     async def serve(self):
-        async with websockets.serve(self._handler, HOST, PORT, max_size=32 * 1024 * 1024):
+        async with websockets.serve(self._handler, HOST, self.port, max_size=32 * 1024 * 1024):
             await asyncio.Future()
 
     async def _handler(self, conn):

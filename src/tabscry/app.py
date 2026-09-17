@@ -22,7 +22,8 @@ from textual.widgets import Footer, Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 from textual_image.widget import Image as ImageWidget
 
-from .bridge import PORT, Bridge
+from .bridge import ENGINE_PORT, PORT, Bridge
+from .browser import Engine
 from .chat import Chat, Turn, build_prompt, export, list_chats
 from .orb import Orb
 from .icons import iconize
@@ -473,13 +474,20 @@ class Tabscry(App):
 
     def __init__(self):
         super().__init__()
-        self.bridge = Bridge(on_status=lambda c: self.call_later(self._set_status, c))
+        settings = load_settings()
+        self.engine = Engine(ENGINE_PORT)
+        # "own": tabscry's own Chromium (never throttled); "browser": the extension in your browser
+        self.engine_mode = settings.get("engine") or ("own" if self.engine.available else "browser")
+        if self.engine_mode == "own" and not self.engine.available:
+            self.engine_mode = "browser"
+        port = ENGINE_PORT if self.engine_mode == "own" else PORT
+        self.bridge = Bridge(on_status=lambda c: self.call_later(self._set_status, c), port=port)
         self.chat = Chat.new()
         self.fresh = True
         self.busy = False
         self.sources_turn: Turn | None = None  # whose sources the drawer shows
-        self.icons = load_settings().get("icons", "nerd") != "emoji"
-        self.route = "tab" if load_settings().get("route") == "tab" else "window"
+        self.icons = settings.get("icons", "nerd") != "emoji"
+        self.route = "tab" if settings.get("route") == "tab" else "window"
         self.images: dict[str, PIL.Image.Image | None] = {}  # url -> image (None = failed)
         self.image_version = 0
         self.fetching: set[str] = set()
@@ -514,15 +522,24 @@ class Tabscry(App):
         self.theme = load_theme_name()
         self._set_status(False)
         self.run_worker(self.bridge.serve(), group="bridge", exit_on_error=True)
+        if self.engine_mode == "own":
+            try:
+                self.engine.start()
+            except RuntimeError as e:
+                self.notify(str(e), severity="error", timeout=10)
         self.query_one("#prompt", Input).focus()
 
     def _set_status(self, connected: bool):
         if not self.is_running:
             return
+        where = "tabscry's browser" if self.engine_mode == "own" else "your browser"
         self.query_one("#status", Static).update(Content.from_markup(
-            "[$accent]●[/] [$text-muted]connected[/]" if connected
-            else f"[$error]○[/] [$text-muted]waiting for extension on :{PORT}[/]"
+            f"[$accent]●[/] [$text-muted]{where}[/]" if connected
+            else f"[$error]○[/] [$text-muted]starting {where} on :{self.bridge.port}…[/]"
         ))
+
+    def on_unmount(self):
+        self.engine.stop()
 
     @work(group="drawer", exclusive=True)
     async def toggle_sources(self, turn: Turn | None):
@@ -668,6 +685,16 @@ class Tabscry(App):
                 self.fresh = True  # next question opens Google the new way
                 return self.notify(
                     "route: minimized window" if self.route == "window" else "route: background tab in your window"
+                )
+            case "/engine":
+                self.engine_mode = "browser" if self.engine_mode == "own" else "own"
+                if self.engine_mode == "own" and not self.engine.available:
+                    self.engine_mode = "browser"
+                    return self.notify("no Chromium for tabscry's own browser — run `tabscry --install-browser`", severity="warning")
+                save_setting("engine", self.engine_mode)
+                return self.notify(
+                    ("engine: tabscry's own browser" if self.engine_mode == "own" else "engine: the extension in your browser")
+                    + " — restart tabscry to switch"
                 )
             case "/icons":
                 return await self.toggle_icons()
