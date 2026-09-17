@@ -18,7 +18,7 @@ terminal TUI  ⇄  ws://127.0.0.1:8765  ⇄  Dia extension  ⇄  background tab:
   | `ctrl+n` / `/new` | new chat |
   | `ctrl+r` / `/history` | browse, filter, reopen or delete saved chats |
   | `ctrl+s` / `/export [path]` | save chat as markdown |
-  | `ctrl+o` / `/open` | open the current conversation as a real tab |
+  | `ctrl+o` / `/open` | switch to the AI Mode tab in your browser |
   | `ctrl+t` / `/theme [dusk\|saffron\|ember\|mono]` | switch colour theme (remembered) |
   | `/icons` | toggle emoji ↔ Nerd Font icons (display only; needs a Nerd Font — Ghostty has one built in) |
   | `ctrl+q` / `/quit` | quit |
@@ -31,7 +31,7 @@ Google gets a fresh thread, so tabscry replays the recent Q&A (up to ~7.5k chars
 with your question; the answer label shows `↺ N earlier turns as context`.
 
 ## How it works / caveats
-- Google runs invisibly inside an offscreen document (a hidden extension page — no tab, no window, never steals focus). A session-only network rule strips Google's anti-framing headers for tab-less frames only. Browsers without `chrome.offscreen` fall back to a background tab that's never activated. Everything is torn down when the TUI quits; one-shot runs keep it alive so `--continue` works.
+- Google runs in a background tab that's created inactive, so it never takes focus. Every tab tabscry opens is closed as soon as the TUI session ends; one-shot runs keep the tab until the next session so `--continue` works. The scraper (`extension/page.js`) is injected only into that tab.
 - The extension scrapes `[data-container-id="main-col"]` (answer) and `rhs-col` (sources) and converts to markdown; an answer is "done" once it stops changing for ~3s.
 - Follow-ups are typed into the "Ask anything" box via synthetic input + Enter.
 - It's scraping Google's DOM — when Google ships a redesign, fix `scrape()` / `submitFollowUp()` in `extension/page.js`.

@@ -1,7 +1,5 @@
 // tabscry page script: scrapes Google AI Mode and types questions into it.
-// Declared as a content script for google.com/search, so it also loads on your normal searches —
-// there it only defines functions and does nothing else. It talks to the extension only when the
-// page is inside tabscry's hidden offscreen frame.
+// Injected on demand into tabscry's own background tab only.
 (() => {
 if (window.__tabscry) return;
 function submitFollowUp(text) {
@@ -128,16 +126,4 @@ function diagnose() {
 
 window.__tabscry = { scrape, submitFollowUp, diagnose, url: () => location.href };
 
-const framedByUs = window !== window.top && location.ancestorOrigins?.[0] === `chrome-extension://${chrome.runtime.id}`;
-if (framedByUs) {
-  const port = chrome.runtime.connect({ name: "tabscry-page" });
-  port.onMessage.addListener(({ rid, cmd, args }) => {
-    try {
-      port.postMessage({ rid, result: window.__tabscry[cmd](...(args || [])) });
-    } catch (e) {
-      port.postMessage({ rid, error: String(e?.message || e) });
-    }
-  });
-  port.postMessage({ hello: location.href });
-}
 })();
