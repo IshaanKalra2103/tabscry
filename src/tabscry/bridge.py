@@ -10,7 +10,7 @@ import websockets
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TABSCRY_PORT", 8765))  # extension in your own browser
-ENGINE_PORT = int(os.environ.get("TABSCRY_ENGINE_PORT", 0))  # tabscry's own Chromium (0 = pick a free port)
+ENGINE_PORT = int(os.environ.get("TABSCRY_ENGINE_PORT", 8766))  # tabscry's own Chromium
 
 
 def free_port() -> int:

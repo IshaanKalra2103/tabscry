@@ -15,7 +15,7 @@ from .themes import load_settings, save_setting
 
 async def one_shot(text: str, new: bool):
     settings = load_settings()
-    engine = Engine(ENGINE_PORT or free_port())
+    engine = Engine(ENGINE_PORT)
     own = (settings.get("engine") or ("own" if engine.available else "browser")) == "own" and engine.available
     if own:
         engine.start()

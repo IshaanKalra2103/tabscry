@@ -480,7 +480,7 @@ class Tabscry(App):
         self.engine_mode = settings.get("engine") or ("own" if self.engine.available else "browser")
         if self.engine_mode == "own" and not self.engine.available:
             self.engine_mode = "browser"
-        port = (ENGINE_PORT or free_port()) if self.engine_mode == "own" else PORT
+        port = ENGINE_PORT if self.engine_mode == "own" else PORT
         self.bridge = Bridge(on_status=lambda c: self.call_later(self._set_status, c), port=port)
         self.chat = Chat.new()
         self.fresh = True
@@ -528,7 +528,21 @@ class Tabscry(App):
                 self.engine.start()
             except RuntimeError as e:
                 self.notify(str(e), severity="error", timeout=10)
+            else:
+                self.set_timer(12, self.check_engine)
         self.query_one("#prompt", Input).focus()
+
+    def check_engine(self):
+        """If tabscry's own browser never connected, say why instead of leaving a dead status line."""
+        if self.bridge.conn is not None:
+            return
+        process = self.engine.process
+        if process is None or process.poll() is not None:
+            self.notify(f"tabscry's browser exited ({self.engine.binary.name if self.engine.binary else '?'}). "
+                        "Try `tabscry --install-browser`, or /engine to use your own browser.",
+                        severity="error", timeout=15)
+        else:
+            self.notify("tabscry's browser is running but its extension hasn't connected yet", severity="warning", timeout=10)
 
     async def serve_bridge(self):
         try:

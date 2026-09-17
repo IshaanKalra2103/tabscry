@@ -56,9 +56,12 @@ with your question; the answer label shows `↺ N earlier turns as context`.
 - If Google shows a captcha/consent page, `/open` the tab and clear it.
 - `ERR_CONNECTION_REFUSED` in the extension's error log just means the TUI isn't running; it retries with backoff (up to 30s).
 - After editing `extension/`, hit reload on the extension card.
+- ABC Areal Mono ships without the "monospaced" flags, so Ghostty won't offer it until you set them:
+  `uvx --with fonttools python -c "from fontTools.ttLib import TTFont; import pathlib\n[(lambda f: (f.__setitem__('post', f['post']), setattr(f['post'],'isFixedPitch',1), setattr(f['OS/2'].panose,'bProportion',9), f.save(p)))(TTFont(p)) for p in map(str, pathlib.Path.home().glob('Library/Fonts/ABCArealMono-*.ttf'))]"`
+  then move the files out of `~/Library/Fonts` and back to refresh macOS's font cache.
 - A TUI can't set the terminal's font, so `--font` launches a fresh Ghostty window with `--font-family` instead of touching your Ghostty config. Use the *Mono* cut of any font; Ghostty keeps its built-in Nerd Font symbols as fallback, so the icons survive.
 - Ports: `TABSCRY_PORT` (your browser, default 8765), `TABSCRY_ENGINE_PORT` (tabscry's own browser; default 0 = pick a free port) — separate so both can be loaded at once.
-- tabscry's own browser is unthrottled (`--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`), so answers stream even though nothing is visible; it's signed out, and it's killed when the TUI exits.
+- tabscry's own browser gets a throwaway profile per run (a reused profile keeps Chrome's installed copy of the extension, so edits never take effect), and any browser left from an earlier run is killed on start. It's unthrottled (`--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`), so answers stream even though nothing is visible; it's signed out, and it's killed when the TUI exits.
 - One-shot runs with the sandboxed engine start and stop the browser per command, so `--continue` only keeps context in engine B (your browser).
 
 ## Future work
