@@ -1,0 +1,23 @@
+[project]
+name = "tabscry"
+version = "0.1.0"
+description = "Google AI Mode in your terminal, driven through your own browser"
+readme = "README.md"
+authors = [
+    { name = "Ishaan Kalra", email = "74290686+IshaanKalra2103@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+    "textual>=8.2.8",
+    "textual-image>=0.14.0",
+    "websockets>=17.1",
+]
+
+[project.scripts]
+tabscry = "tabscry:main"
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
