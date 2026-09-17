@@ -95,6 +95,52 @@ class ImageRow(Horizontal):
                 yield ImageWidget(pil, classes="img")
 
 
+class SourcesChip(Static):
+    """Collapsed "▸ 8 sources" toggle under an answer; opens the sources drawer."""
+
+    def __init__(self, turn: Turn):
+        super().__init__(classes="sources-chip")
+        self.turn = turn
+
+    def on_mount(self):
+        self.refresh_label()
+
+    def refresh_label(self):
+        n = len(self.turn.sources)
+        is_open = self.app.sources_turn is self.turn
+        arrow = "▾" if is_open else "▸"
+        self.set_class(is_open, "-open")
+        self.update(Content.from_markup(f"[$accent]{arrow}[/] {n} source{'s' if n != 1 else ''}"))
+
+    def on_click(self):
+        self.app.toggle_sources(self.turn)
+
+
+class SourcesDrawer(Vertical):
+    """Right-hand panel listing one answer's sources."""
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="drawer-title")
+        yield VerticalScroll(id="drawer-list")
+        yield Static(Content.from_markup("[$accent]esc[/] [$text-muted]close   click a title to open it[/]"), id="drawer-hint")
+
+    async def show(self, turn: Turn):
+        question = Content(self.app.display(turn.question[:60])).markup
+        self.query_one("#drawer-title", Static).update(
+            Content.from_markup(f"[b $secondary]sources[/]  [$text-muted]{question}[/]")
+        )
+        items = self.query_one("#drawer-list", VerticalScroll)
+        await items.remove_children()
+        for i, src in enumerate(turn.sources, 1):
+            title = Content(self.app.display(src["title"])).markup
+            await items.mount(Horizontal(
+                Static(Content.from_markup(f"[$accent]{i}[/]"), classes="drawer-num"),
+                Static(Content.from_markup(f"[link='{src['url']}']{title}[/link]"), classes="drawer-link"),
+                classes="drawer-item",
+            ))
+        items.scroll_home(animate=False)
+
+
 class AnswerView(Vertical):
     """Reveals the answer a few characters per frame, like an LLM stream."""
 
@@ -202,11 +248,7 @@ class AnswerView(Vertical):
             await self.render_text(self.target)
         self.update_label()
         if self.turn.sources:
-            lines = ["[b $text-muted]sources[/]"]
-            for i, s in enumerate(self.turn.sources, 1):
-                title = Content(self.app.display(s["title"])).markup  # escape
-                lines.append(f"[$text-muted]{i:>2}[/]  [link='{s['url']}']{title}[/link]")
-            await self.mount(Static(Content.from_markup("\n".join(lines)), classes="sources"))
+            await self.mount(SourcesChip(self.turn))
         self.app.follow_scroll()
 
     async def render_text(self, text: str):
@@ -361,7 +403,18 @@ class Tabscry(App):
     .answer .label { height: 1; padding: 0 2; margin-bottom: 1; }
     .answer .body { height: auto; }
     .answer Markdown { margin: 0; padding: 0 2; background: $background; }
-    .sources { height: auto; margin: 1 2 0 2; padding: 1 2; background: $surface; }
+    .sources-chip { width: auto; height: 1; margin: 1 2 0 2; padding: 0 1; background: $surface; color: $text-muted; }
+    .sources-chip:hover, .sources-chip.-open { background: $panel; color: $foreground; }
+    #main { height: 1fr; }
+    #log { width: 1fr; }
+    #drawer { display: none; width: 46; height: 1fr; background: $surface; border-left: tall $panel; padding: 1 2; }
+    #drawer.-open { display: block; }
+    #drawer-title { height: auto; margin-bottom: 1; }
+    #drawer-list { height: 1fr; scrollbar-size-vertical: 1; background: $surface; }
+    .drawer-item { height: auto; margin-bottom: 1; }
+    .drawer-num { width: 3; }
+    .drawer-link { width: 1fr; }
+    #drawer-hint { height: 1; margin-top: 1; }
     .images { height: auto; max-height: 14; overflow-x: auto; padding: 0 2; margin: 0 0 1 0; scrollbar-size-horizontal: 1; }
     .images .img { width: auto; height: 12; margin-right: 1; }
     .img-pending { width: 18; height: 12; content-align: center middle; background: $surface; color: $text-muted; margin-right: 1; }
@@ -378,6 +431,8 @@ class Tabscry(App):
         Binding("ctrl+s", "export", "export"),
         Binding("ctrl+o", "open_tab", "open tab"),
         Binding("ctrl+t", "cycle_theme", "theme"),
+        Binding("ctrl+b", "toggle_latest_sources", "sources"),
+        Binding("escape", "close_sources", show=False),
         Binding("ctrl+q", "quit", "quit"),
     ]
 
@@ -387,6 +442,7 @@ class Tabscry(App):
         self.chat = Chat.new()
         self.fresh = True
         self.busy = False
+        self.sources_turn: Turn | None = None  # whose sources the drawer shows
         self.icons = load_settings().get("icons", "nerd") != "emoji"
         self.route = "tab" if load_settings().get("route") == "tab" else "window"
         self.images: dict[str, PIL.Image.Image | None] = {}  # url -> image (None = failed)
@@ -409,8 +465,10 @@ class Tabscry(App):
         with Horizontal(id="topbar"):
             yield Static(Content.from_markup("[b $secondary]tabscry[/]"), id="brand")
             yield Static(id="status")
-        with VerticalScroll(id="log"):
-            yield welcome()
+        with Horizontal(id="main"):
+            with VerticalScroll(id="log"):
+                yield welcome()
+            yield SourcesDrawer(id="drawer")
         with Vertical(id="bottom"):
             yield Input(placeholder="Ask anything…", id="prompt")
             yield Footer(compact=True, show_command_palette=False)
@@ -431,12 +489,37 @@ class Tabscry(App):
             else f"[$error]○[/] [$text-muted]waiting for extension on :{PORT}[/]"
         ))
 
+    @work(group="drawer", exclusive=True)
+    async def toggle_sources(self, turn: Turn | None):
+        drawer = self.query_one("#drawer", SourcesDrawer)
+        if turn is None or turn is self.sources_turn or not turn.sources:
+            self.sources_turn = None
+            drawer.remove_class("-open")
+        else:
+            self.sources_turn = turn
+            await drawer.show(turn)
+            drawer.add_class("-open")
+        for chip in self.query(SourcesChip):
+            chip.refresh_label()
+
+    def action_toggle_latest_sources(self):
+        latest = next((t for t in reversed(self.chat.turns) if t.sources), None)
+        if latest is None:
+            return self.notify("no sources yet", severity="warning")
+        self.toggle_sources(latest)
+
+    def action_close_sources(self):
+        if self.sources_turn is not None:
+            self.toggle_sources(None)
+
     def follow_scroll(self):
         log = self.query_one("#log", VerticalScroll)
         if log.max_scroll_y - log.scroll_y <= 4:  # only auto-scroll if the user hasn't scrolled up
             log.scroll_end(animate=False)
 
     async def reset_log(self, empty: bool):
+        if self.sources_turn is not None:
+            self.toggle_sources(None)
         log = self.query_one("#log", VerticalScroll)
         await log.remove_children()
         if empty:

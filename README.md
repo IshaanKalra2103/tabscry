@@ -20,6 +20,7 @@ terminal TUI  ⇄  ws://127.0.0.1:8765  ⇄  Dia extension  ⇄  background tab:
   | `ctrl+s` / `/export [path]` | save chat as markdown |
   | `ctrl+o` / `/open` | show the AI Mode page in your browser |
   | `ctrl+t` / `/theme [dusk\|saffron\|ember\|mono]` | switch colour theme (remembered) |
+  | `ctrl+b` / click `▸ N sources` | open/close the sources drawer on the right (`esc` closes) |
   | `/route` | switch between a minimized window (default) and a background tab (remembered) |
   | `/icons` | toggle emoji ↔ Nerd Font icons (display only; needs a Nerd Font — Ghostty has one built in) |
   | `ctrl+q` / `/quit` | quit |
