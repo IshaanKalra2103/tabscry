@@ -27,6 +27,7 @@ from .themes import BY_NAME, PALETTES, load_settings, load_theme_name, save_sett
 
 IMAGE_LINE = re.compile(r"^!\[([^\]]*)\]\((https?://[^)\s]+)\)\s*$")
 FPS = 40
+DRAWER_WIDTH = 46
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 def split_segments(md: str) -> list[tuple[str, object]]:
@@ -120,9 +121,11 @@ class SourcesDrawer(Vertical):
     """Right-hand panel listing one answer's sources."""
 
     def compose(self) -> ComposeResult:
-        yield Static(id="drawer-title")
-        yield VerticalScroll(id="drawer-list")
-        yield Static(Content.from_markup("[$accent]esc[/] [$text-muted]close   click a title to open it[/]"), id="drawer-hint")
+        # fixed-width body: while the drawer's width animates, text is uncovered instead of re-wrapping
+        with Vertical(id="drawer-body"):
+            yield Static(id="drawer-title")
+            yield VerticalScroll(id="drawer-list")
+            yield Static(Content.from_markup("[$accent]esc[/] [$text-muted]close   click a title to open it[/]"), id="drawer-hint")
 
     async def show(self, turn: Turn):
         question = Content(self.app.display(turn.question[:60])).markup
@@ -407,8 +410,8 @@ class Tabscry(App):
     .sources-chip:hover, .sources-chip.-open { background: $panel; color: $foreground; }
     #main { height: 1fr; }
     #log { width: 1fr; }
-    #drawer { display: none; width: 46; height: 1fr; background: $surface; border-left: tall $panel; padding: 1 2; }
-    #drawer.-open { display: block; }
+    #drawer { display: none; width: 0; height: 1fr; background: $surface; border-left: tall $panel; overflow: hidden hidden; }
+    #drawer-body { width: 45; height: 1fr; padding: 1 2; }
     #drawer-title { height: auto; margin-bottom: 1; }
     #drawer-list { height: 1fr; scrollbar-size-vertical: 1; background: $surface; }
     .drawer-item { height: auto; margin-bottom: 1; }
@@ -493,12 +496,22 @@ class Tabscry(App):
     async def toggle_sources(self, turn: Turn | None):
         drawer = self.query_one("#drawer", SourcesDrawer)
         if turn is None or turn is self.sources_turn or not turn.sources:
+            was_open = self.sources_turn is not None
             self.sources_turn = None
             drawer.remove_class("-open")
+            if was_open:
+                def hide():
+                    if self.sources_turn is None:  # not reopened mid-animation
+                        drawer.display = False
+                drawer.styles.animate("width", 0, duration=0.16, easing="in_cubic", on_complete=hide)
         else:
+            already_open = self.sources_turn is not None
             self.sources_turn = turn
             await drawer.show(turn)
             drawer.add_class("-open")
+            if not already_open:  # slide in; switching answers while open just swaps the list
+                drawer.display = True
+                drawer.styles.animate("width", DRAWER_WIDTH, duration=0.22, easing="out_cubic")
         for chip in self.query(SourcesChip):
             chip.refresh_label()
 
