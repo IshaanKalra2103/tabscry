@@ -51,7 +51,7 @@ class Bridge:
             await asyncio.sleep(20)
             await conn.send(json.dumps({"type": "ping"}))
 
-    async def ask(self, text: str, new: bool = False, keep: bool = False):
+    async def ask(self, text: str, new: bool = False, keep: bool = False, route: str = "window"):
         """Yield chunk/image/done/error messages for one question."""
         if self.conn is None:
             yield {"type": "error", "message": "extension not connected (is the browser open with the extension loaded?)"}
@@ -59,7 +59,7 @@ class Bridge:
         rid = str(next(self.ids))
         q = self.pending[rid] = asyncio.Queue()
         try:
-            await self.conn.send(json.dumps({"type": "ask", "id": rid, "text": text, "new": new, "keep": keep}))
+            await self.conn.send(json.dumps({"type": "ask", "id": rid, "text": text, "new": new, "keep": keep, "route": route}))
             while True:
                 msg = await q.get()
                 yield msg

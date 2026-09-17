@@ -6,6 +6,7 @@ import sys
 
 from .bridge import Bridge
 from .chat import Turn
+from .themes import load_settings
 
 
 async def one_shot(text: str, new: bool):
@@ -16,7 +17,7 @@ async def one_shot(text: str, new: bool):
     except TimeoutError:
         sys.exit("extension didn't connect within 40s")
     turn = Turn(text)
-    async for msg in bridge.ask(text, new=new, keep=True):
+    async for msg in bridge.ask(text, new=new, keep=True, route="tab" if load_settings().get("route") == "tab" else "window"):
         if msg["type"] == "error":
             sys.exit(msg["message"])
         if msg["type"] == "done":

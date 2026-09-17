@@ -388,6 +388,7 @@ class Tabscry(App):
         self.fresh = True
         self.busy = False
         self.icons = load_settings().get("icons", "nerd") != "emoji"
+        self.route = "tab" if load_settings().get("route") == "tab" else "window"
         self.images: dict[str, PIL.Image.Image | None] = {}  # url -> image (None = failed)
         self.image_version = 0
         self.fetching: set[str] = set()
@@ -531,6 +532,13 @@ class Tabscry(App):
                 if arg.strip() not in by_label:
                     return self.notify(f"themes: {', '.join(by_label)}", severity="warning")
                 return self.set_theme(by_label[arg.strip()])
+            case "/route":
+                self.route = "tab" if self.route == "window" else "window"
+                save_setting("route", self.route)
+                self.fresh = True  # next question opens Google the new way
+                return self.notify(
+                    "route: minimized window" if self.route == "window" else "route: background tab in your window"
+                )
             case "/icons":
                 return await self.toggle_icons()
             case "/history":
@@ -562,7 +570,7 @@ class Tabscry(App):
         log.scroll_end(animate=False)
         new, self.fresh = self.fresh, False
         try:
-            async for msg in self.bridge.ask(prompt, new=new):
+            async for msg in self.bridge.ask(prompt, new=new, route=self.route):
                 match msg["type"]:
                     case "chunk":
                         turn.markdown = msg["markdown"]
