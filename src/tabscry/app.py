@@ -22,7 +22,7 @@ from textual.widgets import Footer, Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 from textual_image.widget import Image as ImageWidget
 
-from .bridge import ENGINE_PORT, PORT, Bridge
+from .bridge import ENGINE_PORT, PORT, Bridge, free_port
 from .browser import Engine
 from .chat import Chat, Turn, build_prompt, export, list_chats
 from .orb import Orb
@@ -475,12 +475,12 @@ class Tabscry(App):
     def __init__(self):
         super().__init__()
         settings = load_settings()
-        self.engine = Engine(ENGINE_PORT)
+        self.engine = Engine(0)  # port is decided below
         # "own": tabscry's own Chromium (never throttled); "browser": the extension in your browser
         self.engine_mode = settings.get("engine") or ("own" if self.engine.available else "browser")
         if self.engine_mode == "own" and not self.engine.available:
             self.engine_mode = "browser"
-        port = ENGINE_PORT if self.engine_mode == "own" else PORT
+        port = (ENGINE_PORT or free_port()) if self.engine_mode == "own" else PORT
         self.bridge = Bridge(on_status=lambda c: self.call_later(self._set_status, c), port=port)
         self.chat = Chat.new()
         self.fresh = True
@@ -521,13 +521,21 @@ class Tabscry(App):
             self.register_theme(palette.theme())
         self.theme = load_theme_name()
         self._set_status(False)
-        self.run_worker(self.bridge.serve(), group="bridge", exit_on_error=True)
+        self.run_worker(self.serve_bridge(), group="bridge")
         if self.engine_mode == "own":
+            self.engine.port = self.bridge.port
             try:
                 self.engine.start()
             except RuntimeError as e:
                 self.notify(str(e), severity="error", timeout=10)
         self.query_one("#prompt", Input).focus()
+
+    async def serve_bridge(self):
+        try:
+            await self.bridge.serve()
+        except OSError as e:  # e.g. another tabscry already listening on this port
+            self.notify(f"can't listen on port {self.bridge.port}: {e.strerror}. Another tabscry running?",
+                        severity="error", timeout=12)
 
     def _set_status(self, connected: bool):
         if not self.is_running:
@@ -686,6 +694,10 @@ class Tabscry(App):
                 return self.notify(
                     "route: minimized window" if self.route == "window" else "route: background tab in your window"
                 )
+            case "/font":
+                font = arg.strip() or load_settings().get("font") or "ABC Areal Mono"
+                save_setting("font", font)
+                return self.notify(f"terminals own the font — run: tabscry --font {font!r}", timeout=10)
             case "/engine":
                 self.engine_mode = "browser" if self.engine_mode == "own" else "own"
                 if self.engine_mode == "own" and not self.engine.available:

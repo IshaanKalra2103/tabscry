@@ -35,6 +35,7 @@ Then: `uv tool install -e .`
   | `ctrl+o` / `/open` | show the AI Mode page in your browser |
   | `ctrl+t` / `/theme [dusk\|saffron\|ember\|mono]` | switch colour theme (remembered) |
   | `ctrl+b` / click `▸ N sources` | open/close the sources drawer on the right (`esc` closes) |
+  | `/font [name]` + `tabscry --font [name]` | open tabscry in a new Ghostty window with a chosen font (default [ABC Areal Mono](https://abcdinamo.com/free/areal), free but emailed after a form) |
   | `/engine` | switch between tabscry's own browser and the extension in yours (restart to apply) |
   | `/route` | switch between a minimized window (default) and a background tab (remembered) |
   | `/icons` | toggle emoji ↔ Nerd Font icons (display only; needs a Nerd Font — Ghostty has one built in) |
@@ -55,7 +56,8 @@ with your question; the answer label shows `↺ N earlier turns as context`.
 - If Google shows a captcha/consent page, `/open` the tab and clear it.
 - `ERR_CONNECTION_REFUSED` in the extension's error log just means the TUI isn't running; it retries with backoff (up to 30s).
 - After editing `extension/`, hit reload on the extension card.
-- Ports: `TABSCRY_PORT` (your browser, default 8765), `TABSCRY_ENGINE_PORT` (tabscry's own browser, default 8766) — separate so both can be loaded at once.
+- A TUI can't set the terminal's font, so `--font` launches a fresh Ghostty window with `--font-family` instead of touching your Ghostty config. Use the *Mono* cut of any font; Ghostty keeps its built-in Nerd Font symbols as fallback, so the icons survive.
+- Ports: `TABSCRY_PORT` (your browser, default 8765), `TABSCRY_ENGINE_PORT` (tabscry's own browser; default 0 = pick a free port) — separate so both can be loaded at once.
 - tabscry's own browser is unthrottled (`--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`), so answers stream even though nothing is visible; it's signed out, and it's killed when the TUI exits.
 - One-shot runs with the sandboxed engine start and stop the browser per command, so `--continue` only keeps context in engine B (your browser).
 

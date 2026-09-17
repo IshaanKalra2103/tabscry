@@ -88,8 +88,10 @@ async function openTab(url, route, id) {
     return waitForLoad(existing.id);
   }
   const { owned = [], ownedWindows = [] } = await chrome.storage.session.get(["owned", "ownedWindows"]);
+  // tabscry's own browser starts with no windows at all, so there's nothing to open a tab in
+  const normalWindows = await chrome.windows.getAll({ windowTypes: ["normal"] }).catch(() => []);
   let tab;
-  if (route === "window") {
+  if (route === "window" || !normalWindows.length) {
     const before = await chrome.windows.getLastFocused().catch(() => null);
     // created minimized in one step (creating normal + minimizing is what pulls the browser forward)
     const win = await chrome.windows.create({ url, state: "minimized" });
