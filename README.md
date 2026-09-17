@@ -41,3 +41,23 @@ with your question; the answer label shows `↺ N earlier turns as context`.
 - `ERR_CONNECTION_REFUSED` in the extension's error log just means the TUI isn't running; it retries with backoff (up to 30s).
 - After editing `extension/`, hit reload on the extension card.
 - `TABSCRY_PORT=8799` runs the TUI on another port (for testing against a modified extension copy).
+
+## Future work
+
+### Sandboxed browser engine (instead of the extension)
+Today tabscry drives Google AI Mode inside *your* browser via the extension. That has a structural
+problem: Chromium throttles pages it thinks you can't see (background tabs, minimized/occluded
+windows), so an answer can stall until you look at the tab — and an extension can't turn that off.
+
+Idea: let tabscry launch its own Chromium (e.g. via Playwright/CDP) with a dedicated profile under
+`~/.local/share/tabscry/browser` and throttling disabled (`--disable-background-timer-throttling`,
+`--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`), and inject the
+existing `extension/page.js` directly.
+
+- **Pros:** no stalls, zero interference with your browser (no tabs/windows/focus), works regardless
+  of which browser you use, no extension or websocket bridge to install and reload.
+- **Risks / costs:** headless Chromium is more likely to hit Google's bot detection (fallback: a
+  headful window parked off-screen); no signed-in session/personalisation by default; an extra
+  ~300–500 MB process and a one-time browser download.
+- **Plan:** spike first (does headless get AI Mode across queries + follow-ups without captchas?);
+  if yes, make it the default engine and keep the extension as an optional "use my browser" mode.
