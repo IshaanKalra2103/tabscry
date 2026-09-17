@@ -571,6 +571,8 @@ class Tabscry(App):
                         turn.sources = msg.get("sources", [])
                         turn.note = msg.get("note")
                         turn.done = True
+                    case "notice":
+                        self.notify(msg["message"], severity="warning", timeout=8)
                     case "error":
                         turn.error = msg["message"]
                         turn.done = True

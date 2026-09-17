@@ -9,6 +9,7 @@ const POLL_MS = 350;
 const STABLE_POLLS = 9; // ~3s without change => answer finished
 const TIMEOUT_MS = 120_000;
 const AI_MODE = "https://www.google.com/search?udm=50";
+const HIDDEN_PAGE_GRACE_MS = 15_000; // no AI Mode content in the hidden frame by then => use a tab instead
 
 let ws = null;
 let busy = false;
@@ -165,22 +166,26 @@ const tabDriver = {
     }
   },
   async open(url) {
-    let tabId = await this.tabId();
-    const loaded = (id) => new Promise((resolve) => {
-      const listener = (tid, info) => {
-        if (tid === id && info.status === "complete") { chrome.tabs.onUpdated.removeListener(listener); resolve(); }
-      };
-      chrome.tabs.onUpdated.addListener(listener);
-    });
+    // poll instead of listening for onUpdated: a fast load can finish before a listener is attached
+    const loaded = async (id) => {
+      const deadline = Date.now() + 20_000;
+      await sleep(300); // let the navigation start so we don't see the previous page's "complete"
+      while (Date.now() < deadline) {
+        const tab = await chrome.tabs.get(id).catch(() => null);
+        if (!tab) throw new Error("AI Mode tab was closed");
+        if (tab.status === "complete") return;
+        await sleep(200);
+      }
+      throw new Error("AI Mode page didn't load");
+    };
+    const tabId = await this.tabId();
     if (tabId != null) {
-      const wait = loaded(tabId);
       await chrome.tabs.update(tabId, { url });
-      await wait;
-      return;
+      return loaded(tabId);
     }
     const tab = await chrome.tabs.create({ url, active: false }); // never activated: no focus change
     await chrome.storage.session.set({ tabId: tab.id });
-    await loaded(tab.id);
+    return loaded(tab.id);
   },
   async has() {
     return (await this.tabId()) != null;
@@ -208,6 +213,20 @@ const tabDriver = {
 };
 
 let driver = offscreenDriver.supported() ? offscreenDriver : tabDriver;
+// remember a fallback for this browser session (survives service-worker restarts)
+chrome.storage.session.get("driver").then(({ driver: saved }) => { if (saved === "tab") driver = tabDriver; });
+
+async function useTabDriver(reason) {
+  driver = tabDriver;
+  await chrome.storage.session.set({ driver: "tab" });
+  await offscreenDriver.close().catch(() => {});
+  console.warn("tabscry: hidden page unusable, falling back to a background tab:", reason);
+}
+
+function describe(diag) {
+  if (!diag) return "page didn't respond";
+  return `page was "${diag.title}" (${diag.url}) showing: ${diag.text.slice(0, 160) || "nothing"}`;
+}
 
 async function openPage(url) {
   try {
@@ -260,7 +279,8 @@ async function reveal(id) {
   send({ type: "revealed", id });
 }
 
-async function ask({ id, text, new: fresh, keep = false }) {
+async function ask(msg, retried = false) {
+  const { id, text, new: fresh, keep = false } = msg;
   // keep=true (one-shot CLI) leaves the page alive after disconnect so --continue works
   await chrome.storage.session.set({ keep });
   let baseline = 0;
@@ -293,7 +313,16 @@ async function ask({ id, text, new: fresh, keep = false }) {
     }
     if (!result) continue;
     if (result.blocked) throw new Error("Google is showing a captcha/consent page — press ctrl+o to open it and clear it");
-    if (!result.markdown) continue;
+    if (!result.markdown) {
+      if (!last && !retried && driver === offscreenDriver && Date.now() - start > HIDDEN_PAGE_GRACE_MS) {
+        // e.g. the browser blocks Google's cookies inside the hidden frame and Google serves something else
+        const diag = await driver.call("diagnose").catch(() => null);
+        await useTabDriver(describe(diag));
+        send({ type: "notice", id, message: "hidden page didn't work in this browser — retrying in a background tab" });
+        return ask({ ...msg, new: true }, true);
+      }
+      continue;
+    }
     if (result.markdown !== last) {
       last = result.markdown;
       stable = 0;
@@ -303,7 +332,8 @@ async function ask({ id, text, new: fresh, keep = false }) {
     }
   }
   if (last) return send({ type: "done", id, markdown: last, sources: [], note: "timed out" });
-  throw new Error("timed out waiting for AI Mode");
+  const diag = await driver.call("diagnose").catch(() => null);
+  throw new Error(`timed out waiting for AI Mode — ${describe(diag)}`);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

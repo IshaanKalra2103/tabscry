@@ -116,7 +116,17 @@ function scrape(baseline) {
   return { markdown, sources: sources.slice(0, 8) };
 }
 
-window.__tabscry = { scrape, submitFollowUp, url: () => location.href };
+// what the page actually is, for error messages when no answer shows up
+function diagnose() {
+  return {
+    url: location.href.slice(0, 120),
+    title: document.title,
+    text: (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 240),
+    answerBlocks: document.querySelectorAll('[data-container-id="main-col"]').length,
+  };
+}
+
+window.__tabscry = { scrape, submitFollowUp, diagnose, url: () => location.href };
 
 const framedByUs = window !== window.top && location.ancestorOrigins?.[0] === `chrome-extension://${chrome.runtime.id}`;
 if (framedByUs) {
