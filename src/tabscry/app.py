@@ -9,6 +9,9 @@ from datetime import datetime
 from pathlib import Path
 
 import PIL.Image
+from rich.style import Style
+from rich.table import Table
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -117,6 +120,42 @@ class SourcesChip(Static):
         self.app.toggle_sources(self.turn)
 
 
+class SourceLink(Static):
+    """One clickable source row: hover underlines the title, click opens it in the browser.
+
+    A single widget (a two-column grid for a hanging indent) so hover isn't split across children.
+    """
+
+    def __init__(self, index: int, title: str, url: str):
+        super().__init__(classes="drawer-item")
+        self.index, self.title, self.url = index, title, url
+        self.hovered = False
+
+    def on_mount(self):
+        self.draw()
+
+    def draw(self):
+        theme = self.app.current_theme
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(width=2, no_wrap=True)
+        grid.add_column(ratio=1)
+        title_style = Style(color=theme.secondary, underline=True) if self.hovered else Style(color=theme.foreground)
+        grid.add_row(Text(str(self.index), style=Style(color=theme.accent, bold=self.hovered)), Text(self.title, style=title_style))
+        self.update(grid)
+
+    def on_enter(self):
+        self.hovered = True
+        self.draw()
+
+    def on_leave(self):
+        self.hovered = False
+        self.draw()
+
+    def on_click(self):
+        self.app.open_url(self.url)
+        self.app.notify(f"opened {self.title[:50]}", timeout=2)
+
+
 class SourcesDrawer(Vertical):
     """Right-hand panel listing one answer's sources."""
 
@@ -135,12 +174,7 @@ class SourcesDrawer(Vertical):
         items = self.query_one("#drawer-list", VerticalScroll)
         await items.remove_children()
         for i, src in enumerate(turn.sources, 1):
-            title = Content(self.app.display(src["title"])).markup
-            await items.mount(Horizontal(
-                Static(Content.from_markup(f"[$accent]{i}[/]"), classes="drawer-num"),
-                Static(Content.from_markup(f"[link='{src['url']}']{title}[/link]"), classes="drawer-link"),
-                classes="drawer-item",
-            ))
+            await items.mount(SourceLink(i, self.app.display(src["title"]), src["url"]))
         items.scroll_home(animate=False)
 
 
@@ -414,9 +448,7 @@ class Tabscry(App):
     #drawer-body { width: 45; height: 1fr; padding: 1 2; }
     #drawer-title { height: auto; margin-bottom: 1; }
     #drawer-list { height: 1fr; scrollbar-size-vertical: 1; background: $surface; }
-    .drawer-item { height: auto; margin-bottom: 1; }
-    .drawer-num { width: 3; }
-    .drawer-link { width: 1fr; }
+    .drawer-item { height: auto; margin-bottom: 1; pointer: pointer; }
     #drawer-hint { height: 1; margin-top: 1; }
     .images { height: auto; max-height: 14; overflow-x: auto; padding: 0 2; margin: 0 0 1 0; scrollbar-size-horizontal: 1; }
     .images .img { width: auto; height: 12; margin-right: 1; }
@@ -581,6 +613,8 @@ class Tabscry(App):
 
     def set_theme(self, name: str):
         self.theme = name
+        for link in self.query(SourceLink):  # rows paint with theme colours directly
+            link.draw()
         save_theme_name(name)
         self.notify(f"theme: {BY_NAME[name].label}")
 
