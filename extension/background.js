@@ -9,6 +9,7 @@ const POLL_MS = 350;
 const STABLE_POLLS = 9; // ~3s without change => answer finished
 const TIMEOUT_MS = 120_000;
 const AI_MODE = "https://www.google.com/search?udm=50";
+const TOKEN = null; // tabscry's own browser gets a session token patched in here
 
 let ws = null;
 let busy = false;
@@ -23,12 +24,15 @@ function connect() {
   // Chrome logs ERR_CONNECTION_REFUSED for every attempt while the TUI isn't running (harmless);
   // back off to 30s so the errors page doesn't fill up.
   ws = new WebSocket(WS_URL);
-  ws.onopen = () => { retryMs = 1000; send({ type: "hello", agent: navigator.userAgent }); };
-  ws.onclose = () => {
+  ws.onopen = () => { retryMs = 1000; send({ type: "hello", agent: navigator.userAgent, token: TOKEN }); };
+  ws.onclose = (event) => {
     ws = null;
     closeTabs(); // session over: close everything we opened
-    setTimeout(connect, retryMs);
-    retryMs = Math.min(retryMs * 2, 30_000);
+    // 4003 = a browser is already connected (usually our own previous worker still closing): retry soon.
+    // 4001 = this isn't that session's browser: back off, it won't start working on its own.
+    const soon = event.code === 4003;
+    setTimeout(connect, soon ? 1000 : retryMs);
+    if (!soon) retryMs = Math.min(retryMs * 2, 30_000);
   };
   ws.onerror = () => {};
   ws.onmessage = (ev) => {

@@ -7,19 +7,27 @@ import shutil
 import subprocess
 import sys
 
-from .bridge import ENGINE_PORT, PORT, Bridge, free_port
+import secrets
+
+from .bridge import ENGINE_PORT, PORT, Bridge, PortBusy, reserve_port
 from .browser import Engine, install_chromium
-from .chat import Turn
+from .chat import CHATS_DIR, Turn
 from .themes import load_settings, save_setting
 
 
 async def one_shot(text: str, new: bool):
     settings = load_settings()
-    engine = Engine(ENGINE_PORT)
+    token = secrets.token_urlsafe(16)
+    engine = Engine(ENGINE_PORT, token)
     own = (settings.get("engine") or ("own" if engine.available else "browser")) == "own" and engine.available
+    port = engine.port if own else PORT
+    try:
+        lock = reserve_port(port, CHATS_DIR.parent)
+    except PortBusy as e:
+        sys.exit(f"{e} — quit it first, or use a different TABSCRY_ENGINE_PORT")
     if own:
         engine.start()
-    bridge = Bridge(port=engine.port if own else PORT)
+    bridge = Bridge(port=port, token=token if own else None)
     server = asyncio.create_task(bridge.serve())
     try:
         await asyncio.wait_for(bridge.connected.wait(), timeout=40)
@@ -34,6 +42,7 @@ async def one_shot(text: str, new: bool):
             print(turn.answer_markdown())
     server.cancel()
     engine.stop()  # the sandboxed browser lives only as long as the command
+    lock.close()
 
 
 DEFAULT_FONT = "ABC Areal Mono"
@@ -77,4 +86,8 @@ def main():
     else:
         from .app import Tabscry  # imported lazily: textual-image probes the terminal on import
 
-        Tabscry().run()
+        try:
+            app = Tabscry()
+        except PortBusy as e:
+            sys.exit(f"{e} — quit it first, or use a different TABSCRY_ENGINE_PORT")
+        app.run()

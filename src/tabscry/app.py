@@ -3,6 +3,7 @@
 import asyncio
 import io
 import re
+import secrets
 import time
 import urllib.request
 from datetime import datetime
@@ -22,9 +23,9 @@ from textual.widgets import Footer, Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 from textual_image.widget import Image as ImageWidget
 
-from .bridge import ENGINE_PORT, PORT, Bridge, free_port
+from .bridge import ENGINE_PORT, PORT, Bridge, PortBusy, reserve_port
 from .browser import Engine
-from .chat import Chat, Turn, build_prompt, export, list_chats
+from .chat import CHATS_DIR, Chat, Turn, build_prompt, export, list_chats
 from .orb import Orb
 from .icons import iconize
 from .themes import BY_NAME, PALETTES, load_settings, load_theme_name, save_setting, save_theme_name
@@ -475,13 +476,16 @@ class Tabscry(App):
     def __init__(self):
         super().__init__()
         settings = load_settings()
-        self.engine = Engine(0)  # port is decided below
+        self.token = secrets.token_urlsafe(16)  # proves a browser belongs to this session
+        self.engine = Engine(0, self.token)  # port is decided below
         # "own": tabscry's own Chromium (never throttled); "browser": the extension in your browser
         self.engine_mode = settings.get("engine") or ("own" if self.engine.available else "browser")
         if self.engine_mode == "own" and not self.engine.available:
             self.engine_mode = "browser"
         port = ENGINE_PORT if self.engine_mode == "own" else PORT
-        self.bridge = Bridge(on_status=lambda c: self.call_later(self._set_status, c), port=port)
+        self.lock = reserve_port(port, CHATS_DIR.parent)  # raises PortBusy if another tabscry has it
+        self.bridge = Bridge(on_status=lambda c: self.call_later(self._set_status, c), port=port,
+                             token=self.token if self.engine_mode == "own" else None)
         self.chat = Chat.new()
         self.fresh = True
         self.busy = False

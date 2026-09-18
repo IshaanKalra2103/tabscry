@@ -77,7 +77,7 @@ def install_chromium(log=print) -> Path:
     return binary
 
 
-def extension_for(port: int, source: Path = BUNDLED_EXTENSION) -> Path:
+def extension_for(port: int, token: str = "", source: Path = BUNDLED_EXTENSION) -> Path:
     """Copy of the extension wired to `port`, so it can't clash with one loaded in your own browser.
 
     The version encodes a hash of the copied files: Chrome keeps the installed copy of an unpacked
@@ -95,6 +95,7 @@ def extension_for(port: int, source: Path = BUNDLED_EXTENSION) -> Path:
         text = file.read_text()
         if file.name == "background.js":
             text = text.replace("ws://127.0.0.1:8765", f"ws://127.0.0.1:{port}")
+            text = text.replace("const TOKEN = null;", f'const TOKEN = "{token}";')
         files[file.name] = text
     for name, text in files.items():
         (EXTENSION_COPY / name).write_text(text)
@@ -108,8 +109,9 @@ def extension_for(port: int, source: Path = BUNDLED_EXTENSION) -> Path:
 class Engine:
     """Runs tabscry's own Chromium for as long as the TUI is up."""
 
-    def __init__(self, port: int):
+    def __init__(self, port: int, token: str = ""):
         self.port = port
+        self.token = token
         self.process: subprocess.Popen | None = None
         self.extension = EXTENSION_COPY
         self.binary = find_chromium()
@@ -155,7 +157,7 @@ class Engine:
         self.kill_stale()
         if not self.binary:
             raise RuntimeError("no Chromium found — run `tabscry --install-browser`")
-        self.extension = extension_for(self.port)
+        self.extension = extension_for(self.port, self.token)
         PROFILES.mkdir(parents=True, exist_ok=True)
         self.profile = Path(tempfile.mkdtemp(prefix="run-", dir=PROFILES))
         self.spawn()
