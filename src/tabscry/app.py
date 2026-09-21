@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import re
 import secrets
 import time
@@ -31,6 +32,7 @@ from .icons import iconize
 from .themes import BY_NAME, PALETTES, load_settings, load_theme_name, save_setting, save_theme_name
 
 IMAGE_LINE = re.compile(r"^!\[([^\]]*)\]\((https?://[^)\s]+)\)\s*$")
+QUIZ_LINE = re.compile(r"^@@quiz:(\d+)@@\s*$")
 FPS = 40
 DRAWER_WIDTH = 46
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -50,6 +52,13 @@ def split_segments(md: str) -> list[tuple[str, object]]:
         text.clear()
 
     for line in md.split("\n"):
+        if q := QUIZ_LINE.match(line):
+            flush_text()
+            if row:
+                segments.append(("images", row))
+                row = []
+            segments.append(("quiz", int(q[1])))
+            continue
         if m := IMAGE_LINE.match(line):
             flush_text()
             row.append((m[2], m[1]))
@@ -180,6 +189,179 @@ class SourcesDrawer(Vertical):
         items.scroll_home(animate=False)
 
 
+class QuizOption(Static):
+    """One answer choice. A single widget so :hover styling applies to the whole row."""
+
+    def __init__(self, quiz: "QuizView", option_index: int, markup: str, state: str):
+        super().__init__(Content.from_markup(markup), classes=f"quiz-option {state}")
+        self.quiz, self.option_index = quiz, option_index
+
+    def on_click(self, event):
+        event.stop()
+        self.quiz.focus()
+        self.quiz.choose(self.option_index)
+
+
+class QuizNav(Static):
+    def __init__(self, quiz: "QuizView", action: str, label: str, enabled: bool = True):
+        super().__init__(Content.from_markup(label), classes="quiz-nav-item" + ("" if enabled else " -disabled"))
+        self.quiz, self.action, self.enabled = quiz, action, enabled
+
+    def on_click(self, event):
+        event.stop()
+        self.quiz.focus()
+        if self.enabled:
+            getattr(self.quiz, f"action_{self.action}")()
+
+
+class QuizView(Vertical, can_focus=True):
+    """Google AI Mode's multiple-choice quiz, playable in the terminal.
+
+    One question at a time: pick an option to lock it in, see ✓/✗, the right answer and Google's
+    explanation, keep score. Keys work while the quiz has focus (click it); esc returns to the prompt.
+    """
+
+    BINDINGS = [
+        *[Binding(k, f"choose({i})", show=False) for i, k in enumerate("abcd")],
+        *[Binding(k, f"choose({i})", show=False) for i, k in enumerate("1234")],
+        Binding("h", "hint", "hint"),
+        Binding("left,p", "prev", "prev", show=False),
+        Binding("right,n", "next", "next", show=False),
+        Binding("escape", "leave", "back to prompt", show=False),
+    ]
+
+    def __init__(self, turn: Turn, index: int):
+        super().__init__(classes="quiz")
+        self.turn, self.index = turn, index
+        self.current = 0
+        self.answers: dict[int, int] = {}
+        self.hints: set[int] = set()
+
+    @property
+    def quiz(self) -> dict | None:
+        return self.turn.quizzes[self.index] if self.index < len(self.turn.quizzes) else None
+
+    @property
+    def questions(self) -> list[dict]:
+        return (self.quiz or {}).get("questions", [])
+
+    def compose(self) -> ComposeResult:
+        yield Static(classes="quiz-head")
+        yield Static(classes="quiz-question")
+        yield Vertical(classes="quiz-options")
+        yield Static(classes="quiz-feedback")
+        yield Static(classes="quiz-hint")
+        yield Horizontal(classes="quiz-nav")
+
+    def on_mount(self):
+        self.sync()
+
+    def on_click(self):
+        self.focus()
+
+    def score(self) -> tuple[int, int]:
+        right = sum(1 for qi, oi in self.answers.items()
+                    if qi < len(self.questions) and self.questions[qi]["options"][oi].get("correct"))
+        return right, len(self.answers)
+
+    def sync(self):
+        """Redraw from the current data and state."""
+        if not self.query(".quiz-head"):  # not composed yet (is_mounted is still False inside on_mount)
+            return
+        head, question = self.query_one(".quiz-head", Static), self.query_one(".quiz-question", Static)
+        feedback, hint = self.query_one(".quiz-feedback", Static), self.query_one(".quiz-hint", Static)
+        options, nav = self.query_one(".quiz-options", Vertical), self.query_one(".quiz-nav", Horizontal)
+        esc = lambda t: Content(self.app.display(t)).markup  # noqa: E731
+
+        if not self.questions:
+            head.update(Content.from_markup("[b $accent]◆ quiz[/]  [$text-muted]loading…[/]"))
+            for w in (question, feedback, hint):
+                w.display = False
+            return
+        self.current = min(self.current, len(self.questions) - 1)
+        q = self.questions[self.current]
+        chosen = self.answers.get(self.current)
+        right, answered = self.score()
+        total = len(self.questions)
+        done = answered == total
+        progress = f"{self.current + 1}/{total}" + (f"  ·  score {right}/{answered}" if answered else "")
+        if done:
+            progress = f"[b $accent]final score {right}/{total}[/]  ·  question {self.current + 1}/{total}"
+        head.update(Content.from_markup(
+            f"[b $accent]◆ quiz[/]  [b $secondary]{esc(self.quiz.get('title') or '')}[/]\n[$text-muted]{progress}[/]"
+        ))
+        question.display = True
+        question.update(Content.from_markup(f"[b]{self.current + 1}.[/] {esc(q['text'])}"))
+
+        options.remove_children()
+        rows = []
+        for oi, o in enumerate(q["options"]):
+            label = o.get("label") or "ABCD"[oi % 4]
+            if chosen is None:
+                rows.append(QuizOption(self, oi, f"[b $secondary]{label}[/]  {esc(o['text'])}", "-open"))
+            elif o.get("correct"):
+                rows.append(QuizOption(self, oi, f"[b $success]✓ {label}[/]  [$success]{esc(o['text'])}[/]", "-right"))
+            elif oi == chosen:
+                rows.append(QuizOption(self, oi, f"[b $error]✗ {label}[/]  [$error strike]{esc(o['text'])}[/]", "-wrong"))
+            else:
+                rows.append(QuizOption(self, oi, f"[$text-muted]  {label}  {esc(o['text'])}[/]", "-idle"))
+        options.mount_all(rows)
+
+        if chosen is None:
+            feedback.display = False
+        else:
+            picked = q["options"][chosen]
+            colour = "$success" if picked.get("correct") else "$error"
+            lines = [f"[{colour}]{esc(picked.get('feedback') or ('Correct!' if picked.get('correct') else 'Incorrect.'))}[/]"]
+            if not picked.get("correct"):
+                correct = next((o for o in q["options"] if o.get("correct")), None)
+                if correct and correct.get("feedback"):
+                    lines.append(f"[$text-muted]{esc(correct['feedback'])}[/]")
+            feedback.display = True
+            feedback.update(Content.from_markup("\n".join(lines)))
+
+        hint.display = self.current in self.hints and bool(q.get("hint"))
+        if hint.display:
+            hint.update(Content.from_markup(f"[$text-muted]hint · {esc(q['hint'])}[/]"))
+
+        nav.remove_children()
+        last = self.current == total - 1
+        nav.mount_all([
+            QuizNav(self, "prev", "[$secondary]‹ prev[/]", enabled=self.current > 0),
+            QuizNav(self, "hint", "[$secondary]hint[/]", enabled=bool(q.get("hint"))),
+            QuizNav(self, "next", "[$secondary]next ›[/]" if not last else "[$text-muted]end[/]", enabled=not last),
+            Static(Content.from_markup("[$text-muted]click to answer · a–d h ← → · esc[/]"), classes="quiz-keys"),
+        ])
+
+    def choose(self, option_index: int):
+        if not self.questions or self.current in self.answers:
+            return  # answers lock in, like Google's
+        if option_index >= len(self.questions[self.current]["options"]):
+            return
+        self.answers[self.current] = option_index
+        self.sync()
+
+    def action_choose(self, option_index: int):
+        self.choose(option_index)
+
+    def action_hint(self):
+        self.hints ^= {self.current}
+        self.sync()
+
+    def action_prev(self):
+        if self.current > 0:
+            self.current -= 1
+            self.sync()
+
+    def action_next(self):
+        if self.current < len(self.questions) - 1:
+            self.current += 1
+            self.sync()
+
+    def action_leave(self):
+        self.app.query_one("#prompt", Input).focus()
+
+
 class AnswerView(Vertical):
     """Reveals the answer a few characters per frame, like an LLM stream."""
 
@@ -195,6 +377,7 @@ class AnswerView(Vertical):
         self.frame = 0
         self._ticking = False
         self.images_seen = -1
+        self.quizzes_seen = ""
 
     def compose(self) -> ComposeResult:
         yield Static(classes="label")
@@ -264,7 +447,9 @@ class AnswerView(Vertical):
                 common += 1
             self.shown = common
         if self.shown >= len(target):
-            if self.rendered != target or self.images_seen != self.app.image_version:
+            quizzes = json.dumps(self.turn.quizzes)
+            if self.rendered != target or self.images_seen != self.app.image_version or quizzes != self.quizzes_seen:
+                self.quizzes_seen = quizzes
                 await self.render_text(target)
             elif self.turn.done and self.finished_at is None:
                 await self.finish()
@@ -275,7 +460,7 @@ class AnswerView(Vertical):
         end = min(len(target), self.shown + step)
         # don't type image refs character by character
         line_start = target.rfind("\n", 0, end) + 1
-        if target.startswith("![", line_start):
+        if target.startswith(("![", "@@quiz:"), line_start):
             line_end = target.find("\n", end)
             end = len(target) if line_end == -1 else line_end
         self.shown = end
@@ -309,6 +494,11 @@ class AnswerView(Vertical):
                         await existing.update(value)
                     continue
                 widget = Markdown(value)
+            elif kind == "quiz":
+                if isinstance(existing, QuizView) and existing.index == value:
+                    existing.sync()  # options/answers may have arrived since the marker did
+                    continue
+                widget = QuizView(self.turn, value)
             else:
                 if isinstance(existing, ImageRow) and existing.items == value and existing.signature == existing.current_signature():
                     continue
@@ -442,6 +632,20 @@ class Tabscry(App):
     .answer .label { height: 1; padding: 0 2; margin-bottom: 1; }
     .answer .body { height: auto; }
     .answer Markdown { margin: 0; padding: 0 2; background: $background; }
+    .quiz { height: auto; margin: 1 2; padding: 1 2; background: $surface; border: round $panel; }
+    .quiz:focus-within, .quiz:focus { border: round $primary; }
+    .quiz-head { height: auto; margin-bottom: 1; }
+    .quiz-question { height: auto; margin-bottom: 1; }
+    .quiz-options { height: auto; }
+    .quiz-option { height: auto; padding: 0 1; margin-bottom: 0; }
+    .quiz-option.-open:hover { background: $panel 40%; }
+    .quiz-feedback { height: auto; margin-top: 1; padding: 0 1; border-left: outer $panel; }
+    .quiz-hint { height: auto; margin-top: 1; padding: 0 1; }
+    .quiz-nav { height: 1; margin-top: 1; }
+    .quiz-nav-item { width: auto; margin-right: 3; }
+    .quiz-nav-item:hover { text-style: underline; }
+    .quiz-nav-item.-disabled { color: $text-muted 40%; }
+    .quiz-keys { width: 1fr; text-align: right; }
     .sources-chip { width: auto; height: 1; margin: 1 2 0 2; padding: 0 1; background: $surface; color: $text-muted; }
     .sources-chip:hover, .sources-chip.-open { background: $panel; color: $foreground; }
     #main { height: 1fr; }
@@ -761,8 +965,10 @@ class Tabscry(App):
                 match msg["type"]:
                     case "chunk":
                         turn.markdown = msg["markdown"]
+                        turn.quizzes = msg.get("quizzes", turn.quizzes)
                     case "done":
                         turn.markdown = msg["markdown"]
+                        turn.quizzes = msg.get("quizzes", turn.quizzes)
                         turn.sources = msg.get("sources", [])
                         turn.note = msg.get("note")
                         turn.done = True

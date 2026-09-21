@@ -12,6 +12,7 @@ from pathlib import Path
 CHATS_DIR = Path(os.environ.get("TABSCRY_HOME", "~/.local/share/tabscry")).expanduser() / "chats"
 
 IMAGE_MD = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+QUIZ_MARKER = re.compile(r"^@@quiz:(\d+)@@\s*$", re.M)  # where an interactive quiz sits in the answer
 LEGACY_IMAGE_REF = re.compile(r"!\[([^\]]*)\]\(img:\w+\)")  # pre-URL chats stored base64 files by key
 
 MAX_PROMPT = 7500  # AI Mode's input box caps at 8192 chars
@@ -27,9 +28,17 @@ class Turn:
     error: str | None = None
     done: bool = False
     context_turns: int = 0  # earlier turns fed to Google as context for this one
+    quizzes: list[dict] = field(default_factory=list)  # [{title, questions:[{text, options, hint}]}]
+
+    def expand_quizzes(self, md: str, *, answers: bool = True) -> str:
+        """Swap quiz markers for plain markdown (for export, context and one-shot output)."""
+        def sub(m: re.Match) -> str:
+            i = int(m[1])
+            return quiz_markdown(self.quizzes[i], answers=answers) if i < len(self.quizzes) else ""
+        return QUIZ_MARKER.sub(sub, md)
 
     def answer_markdown(self) -> str:
-        md = self.markdown
+        md = self.expand_quizzes(self.markdown)
         if self.sources:
             md += "\n\n**Sources**\n\n" + "\n".join(
                 f"{i}. [{s['title']}]({s['url']})" for i, s in enumerate(self.sources, 1)
@@ -37,6 +46,19 @@ class Turn:
         if self.note:
             md += f"\n\n*({self.note})*"
         return md
+
+
+def quiz_markdown(quiz: dict, *, answers: bool = True) -> str:
+    lines = [f"**Quiz: {quiz.get('title') or 'untitled'}**", ""]
+    for n, q in enumerate(quiz.get("questions", []), 1):
+        lines.append(f"{n}. {q['text']}")
+        for o in q["options"]:
+            mark = " ✓" if answers and o.get("correct") else ""
+            lines.append(f"   - {o['label']}. {o['text']}{mark}")
+            if answers and o.get("correct") and o.get("feedback"):
+                lines.append(f"     *{o['feedback']}*")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def plain_answer(md: str) -> str:
@@ -57,7 +79,7 @@ def build_prompt(history: list[Turn], question: str) -> tuple[str, int]:
     budget = MAX_PROMPT - len(head) - len(tail)
     blocks: list[str] = []
     for t in reversed(usable):  # newest first, so the most recent context survives the budget
-        answer = plain_answer(t.markdown)
+        answer = plain_answer(t.expand_quizzes(t.markdown, answers=False))
         if len(answer) > MAX_ANSWER_IN_CONTEXT:
             answer = answer[:MAX_ANSWER_IN_CONTEXT].rsplit(" ", 1)[0] + " …"
         block = f"Q: {t.question}\nA: {answer}"
@@ -110,7 +132,7 @@ class Chat:
         CHATS_DIR.mkdir(parents=True, exist_ok=True)
         turns = [
             {"question": t.question, "markdown": t.markdown, "sources": t.sources, "note": t.note,
-             "error": t.error, "context_turns": t.context_turns}
+             "error": t.error, "context_turns": t.context_turns, "quizzes": t.quizzes}
             for t in self.turns
         ]
         data = {"id": self.id, "created": self.created, "updated": self.updated, "turns": turns}
@@ -127,7 +149,7 @@ class Chat:
         data = json.loads(path.read_text())
         turns = [
             Turn(t["question"], LEGACY_IMAGE_REF.sub("", t["markdown"]), t.get("sources", []), t.get("note"),
-                 t.get("error"), done=True, context_turns=t.get("context_turns", 0))
+                 t.get("error"), done=True, context_turns=t.get("context_turns", 0), quizzes=t.get("quizzes", []))
             for t in data["turns"]
         ]
         return cls(data["id"], data["created"], turns, data.get("updated", data["created"]))

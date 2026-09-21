@@ -39,6 +39,7 @@ async def one_shot(text: str, new: bool):
             sys.exit(msg["message"])
         if msg["type"] == "done":
             turn.markdown, turn.sources, turn.note = msg["markdown"], msg.get("sources", []), msg.get("note")
+            turn.quizzes = msg.get("quizzes", [])
             print(turn.answer_markdown())
     server.cancel()
     engine.stop()  # the sandboxed browser lives only as long as the command

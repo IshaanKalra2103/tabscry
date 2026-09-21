@@ -122,6 +122,7 @@ with your question; the answer label shows `↺ N earlier turns as context`.
 ## How it works / caveats
 - With the extension in your own browser, Google runs in its own window, created already-minimized, so your own windows and tabs are untouched (`/route` switches to an inactive tab in your current window instead, e.g. if a browser brings that window forward). Everything tabscry opened is closed as soon as the TUI session ends; one-shot runs keep it until the next session so `--continue` works. The scraper (`extension/page.js`) is injected only into that page.
 - The extension scrapes `[data-container-id="main-col"]` (answer) and `rhs-col` (sources) and converts to markdown; an answer is "done" once it stops changing for ~3s.
+- Quizzes ("quiz me on …") are extracted as data — questions, options, the correct answer, Google's per-option explanations and hints — and played in the TUI: click an option (or focus the quiz and press `a`–`d`), `h` for a hint, `←`/`→` between questions, `esc` back to the prompt. Answers lock in and the score is kept. Exports include the quiz with answers marked; replayed context includes the questions without the answers.
 - Follow-ups are typed into the "Ask anything" box via synthetic input + Enter.
 - It's scraping Google's DOM — when Google ships a redesign, fix `scrape()` / `submitFollowUp()` in `extension/page.js`.
 - If Google shows a captcha/consent page, `/open` the tab and clear it.

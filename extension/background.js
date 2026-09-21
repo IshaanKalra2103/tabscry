@@ -199,6 +199,8 @@ async function ask({ id, text, new: fresh, keep = false, route = "window" }) {
 
   const start = Date.now();
   let last = "";
+  let lastSignature = "";
+  let lastQuizzes = [];
   let stable = 0;
   while (Date.now() - start < TIMEOUT_MS) {
     await sleep(POLL_MS);
@@ -212,15 +214,22 @@ async function ask({ id, text, new: fresh, keep = false, route = "window" }) {
     if (!result) continue;
     if (result.blocked) throw new Error("Google is showing a captcha/consent page — press ctrl+o to open it and clear it");
     if (!result.markdown) continue;
-    if (result.markdown !== last) {
+    // a quiz fills in after its marker appears, so watch its data too, not just the text
+    const quizzes = result.quizzes || [];
+    const signature = result.markdown + JSON.stringify(quizzes);
+    if (signature !== lastSignature) {
+      lastSignature = signature;
       last = result.markdown;
+      lastQuizzes = quizzes;
       stable = 0;
-      send({ type: "chunk", id, markdown: last });
+      send({ type: "chunk", id, markdown: last, quizzes });
+    } else if (result.pending) {
+      stable = 0; // a quiz (or similar widget) is still loading
     } else if (++stable >= STABLE_POLLS) {
-      return send({ type: "done", id, markdown: last, sources: result.sources });
+      return send({ type: "done", id, markdown: last, sources: result.sources, quizzes });
     }
   }
-  if (last) return send({ type: "done", id, markdown: last, sources: [], note: "timed out" });
+  if (last) return send({ type: "done", id, markdown: last, sources: [], quizzes: lastQuizzes, note: "timed out" });
   const diag = await call("diagnose").catch(() => null);
   throw new Error(`timed out waiting for AI Mode — ${describe(diag)}`);
 }

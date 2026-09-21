@@ -15,6 +15,37 @@ function submitFollowUp(text) {
   return { ok: true, count };
 }
 
+// AI Mode quizzes are an interactive widget, not prose: answer options and their explanations are
+// all aria-hidden, so the markdown pass would drop them. Pull them out as data instead.
+function extractQuiz(root) {
+  const text = (el) => (el?.textContent || "").replace(/\s+/g, " ").trim();
+  const title = text(root.querySelector("[role=heading]"));
+  const questions = [...root.querySelectorAll("[id^='qtext-']")].map((q) => {
+    const index = q.id.slice("qtext-".length);
+    const block = q.closest("[data-index]") || root;
+    const options = [...root.querySelectorAll(`button[data-mcq-index][data-question-index="${index}"]`)].map((button) => {
+      const content = document.getElementById(button.getAttribute("aria-labelledby") || "");
+      const raw = text(content);
+      const [, label = "", body = raw] = raw.match(/^([A-Z])\.\s*(.*)$/) || [];
+      // explanation = everything in the option's wrapper that isn't the option itself
+      const wrapper = button.closest("[jscontroller]") || button.parentElement;
+      let feedback = text(wrapper).replace(raw, "").trim();
+      // Google also marks the right answer in a trailing comment: <!--…[[1,"",2]]--> (1 = correct)
+      let flagged = false;
+      const comments = document.createTreeWalker(wrapper, NodeFilter.SHOW_COMMENT);
+      while (comments.nextNode()) if (/\[\[1,"",\d+\]\]/.test(comments.currentNode.textContent)) flagged = true;
+      const correct = flagged || /^correct\b/i.test(feedback);
+      return { label, text: body, correct, feedback };
+    });
+    return {
+      text: text(q).replace(/^\d+\.\s*/, ""),
+      options,
+      hint: text(block.querySelector("[id='quiz-hint-content']")),
+    };
+  }).filter((q) => q.text && q.options.length);
+  return questions.length ? { title, questions } : null;
+}
+
 function scrape(baseline) {
   if (location.pathname.startsWith("/sorry") || document.querySelector("form#captcha-form")) return { blocked: true };
   const cols = document.querySelectorAll('[data-container-id="main-col"]');
@@ -29,6 +60,26 @@ function scrape(baseline) {
     const live = liveAll[i];
     if (live) el.dataset.tsd = getComputedStyle(live).display;
   });
+  // quizzes: extract from the live DOM, leave a marker line where they sat
+  const quizzes = [];
+  const cloneAll = clone.querySelectorAll("*");
+  const liveList = [...liveAll];
+  const seenRoots = new Set();
+  for (const first of col.querySelectorAll("[id='qtext-0']")) {
+    let root = first;
+    while (root.parentElement && root !== col && !root.querySelector("[role=heading]")) root = root.parentElement;
+    if (seenRoots.has(root) || root === col) continue;
+    seenRoots.add(root);
+    const quiz = extractQuiz(root);
+    const twin = cloneAll[liveList.indexOf(root)];
+    if (!quiz || !twin) continue;
+    twin.replaceWith(document.createTextNode(`\n\n@@quiz:${quizzes.length}@@\n\n`));
+    quizzes.push(quiz);
+  }
+  // Google renders the intro text first and the quiz a few seconds later behind an aria-busy loader;
+  // report "pending" so the answer isn't declared finished before the quiz exists
+  const pending = !quizzes.length && !!col.querySelector("[aria-busy=true]");
+  clone.querySelectorAll("[aria-busy=true]").forEach((e) => e.remove()); // "Loading AI-generated quiz…" placeholders
   // images become plain markdown with Google's thumbnail URL (from the carousel's data-im JSON);
   // inline base64 previews without a real URL are dropped
   const liveImgs = col.querySelectorAll("img");
@@ -111,7 +162,7 @@ function scrape(baseline) {
       if (label) sources.push({ title: label.replace(/\.? Opens in new tab\.?$/, ""), url: a.href });
     }
   }
-  return { markdown, sources: sources.slice(0, 8) };
+  return { markdown, sources: sources.slice(0, 8), quizzes, pending };
 }
 
 // what the page actually is, for error messages when no answer shows up
