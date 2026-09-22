@@ -2,17 +2,42 @@
 // Injected on demand into tabscry's own background tab only.
 (() => {
 if (window.__tabscry) return;
-function submitFollowUp(text) {
-  const ta = [...document.querySelectorAll("textarea")].find(
-    (t) => /ask anything/i.test(t.placeholder || t.getAttribute("aria-label") || "") && t.offsetParent !== null
-  ) || document.querySelector('textarea[placeholder="Ask anything"]');
+// The page has more than one "Ask anything" box (one is a hidden duplicate); use the visible,
+// bottom-most one. Falling back to a hidden one types into nothing and the follow-up silently vanishes.
+function followUpBox() {
+  const boxes = [...document.querySelectorAll("textarea")].filter((t) =>
+    /ask anything/i.test(t.placeholder || t.getAttribute("aria-label") || ""));
+  const visible = boxes.filter((t) => { const r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+  return (visible.length ? visible : boxes).at(-1) || null;
+}
+
+function answerCount() {
+  return document.querySelectorAll('[data-container-id="main-col"]').length;
+}
+
+function submitFollowUp(text, pressSend = false) {
+  const ta = followUpBox();
   if (!ta) return { ok: false, error: "couldn't find the AI Mode follow-up box" };
-  const count = document.querySelectorAll('[data-container-id="main-col"]').length;
+  const count = answerCount();
   ta.focus();
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(ta, text);
   ta.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
   ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+  if (pressSend) {
+    // second attempt: also click the composer's send button, if Google's handler ignored Enter
+    const composer = ta.closest("form") || ta.parentElement?.parentElement?.parentElement || document;
+    const send = [...composer.querySelectorAll("button, [role=button]")].find((b) =>
+      /send|submit|ask/i.test(b.getAttribute("aria-label") || ""));
+    send?.click();
+  }
   return { ok: true, count };
+}
+
+// Did Google take the follow-up? A new answer block appears, or the box empties / the text is gone.
+function followUpAccepted(count, text) {
+  if (answerCount() > count) return true;
+  const ta = followUpBox();
+  return !!ta && ta.value.trim() !== text.trim();
 }
 
 // AI Mode quizzes are an interactive widget, not prose: answer options and their explanations are
@@ -175,6 +200,6 @@ function diagnose() {
   };
 }
 
-window.__tabscry = { scrape, submitFollowUp, diagnose, url: () => location.href };
+window.__tabscry = { scrape, submitFollowUp, followUpAccepted, diagnose, url: () => location.href };
 
 })();

@@ -1,6 +1,7 @@
 """Chat TUI: typewriter-streamed markdown with inline images, saved history."""
 
 import asyncio
+import contextlib
 import io
 import json
 import re
@@ -33,6 +34,7 @@ from .themes import BY_NAME, PALETTES, load_settings, load_theme_name, save_sett
 
 IMAGE_LINE = re.compile(r"^!\[([^\]]*)\]\((https?://[^)\s]+)\)\s*$")
 QUIZ_LINE = re.compile(r"^@@quiz:(\d+)@@\s*$")
+RECOVERABLE = ("FOLLOWUP_NOT_ACCEPTED", "NO_ANSWER")  # extension errors worth re-asking as a new thread
 FPS = 40
 DRAWER_WIDTH = 46
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -961,26 +963,43 @@ class Tabscry(App):
         log.scroll_end(animate=False)
         new, self.fresh = self.fresh, False
         try:
-            async for msg in self.bridge.ask(prompt, new=new, route=self.route):
-                match msg["type"]:
-                    case "chunk":
-                        turn.markdown = msg["markdown"]
-                        turn.quizzes = msg.get("quizzes", turn.quizzes)
-                    case "done":
-                        turn.markdown = msg["markdown"]
-                        turn.quizzes = msg.get("quizzes", turn.quizzes)
-                        turn.sources = msg.get("sources", [])
-                        turn.note = msg.get("note")
-                        turn.done = True
-                    case "notice":
-                        self.notify(msg["message"], severity="warning", timeout=8)
-                    case "error":
-                        turn.error = msg["message"]
-                        turn.done = True
-                        await view.remove()
-                        await log.mount(Static(f"✕ {msg['message']}", classes="error"))
-                        if new:
-                            self.fresh = True
+            for attempt in range(2):
+                retry = False
+                async with contextlib.aclosing(self.bridge.ask(prompt, new=new, route=self.route)) as stream:
+                    async for msg in stream:
+                        recoverable = msg["type"] == "error" and msg["message"].startswith(RECOVERABLE)
+                        if recoverable and not new and attempt == 0:
+                            # Google ignored the follow-up (or never answered it): ask again as a fresh
+                            # thread, replaying this chat as context so nothing is lost
+                            prompt, turn.context_turns = build_prompt(chat.turns[:-1], text)
+                            new, retry = True, True
+                            self.notify("Google didn't take that follow-up — re-asking it with the chat as context",
+                                        severity="warning", timeout=8)
+                            break
+                        await self.handle_answer_message(msg, turn, view, log, new)
+                if not retry:
+                    break
         finally:
             self.busy = False
             await asyncio.to_thread(chat.save)
+
+    async def handle_answer_message(self, msg: dict, turn: Turn, view, log, new: bool):
+        match msg["type"]:
+            case "chunk":
+                turn.markdown = msg["markdown"]
+                turn.quizzes = msg.get("quizzes", turn.quizzes)
+            case "done":
+                turn.markdown = msg["markdown"]
+                turn.quizzes = msg.get("quizzes", turn.quizzes)
+                turn.sources = msg.get("sources", [])
+                turn.note = msg.get("note")
+                turn.done = True
+            case "notice":
+                self.notify(msg["message"], severity="warning", timeout=8)
+            case "error":
+                turn.error = msg["message"].removeprefix("FOLLOWUP_NOT_ACCEPTED: ").removeprefix("NO_ANSWER: ")
+                turn.done = True
+                await view.remove()
+                await log.mount(Static(f"✕ {turn.error}", classes="error"))
+                if new:
+                    self.fresh = True

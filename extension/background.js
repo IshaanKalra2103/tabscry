@@ -172,6 +172,17 @@ async function reveal(id) {
   send({ type: "revealed", id });
 }
 
+async function accepted(baseline, text, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(300);
+    // a reload (landing page -> results) also counts: the box we typed into is gone
+    const ok = await call("followUpAccepted", baseline, text).catch(() => true);
+    if (ok) return true;
+  }
+  return false;
+}
+
 function describe(diag) {
   if (!diag) return "page didn't respond";
   return `page was "${diag.title}" (${diag.url}) showing: ${diag.text.slice(0, 160) || "nothing"}`;
@@ -195,6 +206,13 @@ async function ask({ id, text, new: fresh, keep = false, route = "window" }) {
     }
     if (!result.ok) throw new Error(result.error);
     baseline = result.count;
+    // confirm Google actually took it; if Enter was ignored, retry once pressing Send too
+    if (!(await accepted(baseline, text))) {
+      await call("submitFollowUp", text, true).catch(() => null);
+      if (!(await accepted(baseline, text))) {
+        throw new Error("FOLLOWUP_NOT_ACCEPTED: Google didn't take the follow-up");
+      }
+    }
   }
 
   const start = Date.now();
@@ -213,7 +231,11 @@ async function ask({ id, text, new: fresh, keep = false, route = "window" }) {
     }
     if (!result) continue;
     if (result.blocked) throw new Error("Google is showing a captcha/consent page — press ctrl+o to open it and clear it");
-    if (!result.markdown) continue;
+    if (!result.markdown) {
+      // accepted but nothing is coming (e.g. Google quietly dropped it): give up early so the TUI can re-ask
+      if (followUp && Date.now() - start > 45_000) throw new Error("NO_ANSWER: no answer to the follow-up after 45s");
+      continue;
+    }
     // a quiz fills in after its marker appears, so watch its data too, not just the text
     const quizzes = result.quizzes || [];
     const signature = result.markdown + JSON.stringify(quizzes);
